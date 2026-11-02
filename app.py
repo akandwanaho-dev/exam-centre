@@ -8,6 +8,7 @@ from typing import Any
 import streamlit as st
 import pandas as pd
 from pypdf import PdfReader
+from supabase import create_client
 
 # ============================================================
 # EXAMPREP AI — single-file Streamlit MVP
@@ -87,6 +88,9 @@ DEFAULTS = {
     "revision_notes": [],
     "page": "Home",
     "selected_doc": None,
+    "supabase_client": None,
+    "auth_user": None,
+    "profile_loaded": False,
 }
 for key, value in DEFAULTS.items():
     if key not in st.session_state:
@@ -100,8 +104,159 @@ def get_secret(name: str, default: str = "") -> str:
     except Exception:
         return os.getenv(name, default)
 
+SUPABASE_URL = get_secret("SUPABASE_URL")
+SUPABASE_ANON_KEY = get_secret("SUPABASE_ANON_KEY") or get_secret("SUPABASE_PUBLISHABLE_KEY")
+
+@st.cache_resource(show_spinner=False)
+def get_supabase_client(url: str, key: str):
+    if not url or not key:
+        return None
+    return create_client(url, key)
+
+def load_profile(user_id: str):
+    """Load the authenticated user's profile using Supabase RLS."""
+    client = st.session_state.supabase_client
+    response = (client.table("profiles").select("user_id,full_name,email,school_name,class_level,role,school_id")
+                .eq("user_id", user_id).maybe_single().execute())
+    return response.data or {}
+
+def render_auth_page():
+    """Render sign-in and student registration, then stop before the app workspace."""
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"] {background: linear-gradient(135deg,#f4f7fc 0%,#edf2fa 100%);}
+    [data-testid="stHeader"] {background:transparent;}
+    .auth-shell {max-width:1050px;margin:3vh auto 0 auto;}
+    .auth-brand {font-size:2.0rem;font-weight:800;color:#14264a;letter-spacing:-1px;}
+    .auth-sub {color:#64748b;font-size:1rem;margin-top:5px;}
+    .auth-panel {background:#14264a;border-radius:22px;padding:34px;color:white;min-height:430px;display:flex;flex-direction:column;justify-content:center;}
+    .auth-panel h1 {color:white;font-size:2.1rem;line-height:1.15;margin-bottom:14px;}
+    .auth-panel p {color:#d7e3f5;font-size:1rem;line-height:1.7;}
+    .auth-point {color:#eaf1fb;padding:8px 0;border-bottom:1px solid rgba(255,255,255,.12);}
+    .auth-card {background:white;border:1px solid #e5eaf2;border-radius:22px;padding:28px 30px;box-shadow:0 18px 55px rgba(20,38,74,.08);}
+    .auth-card h2 {color:#172b4d;margin:0 0 4px 0;}
+    div.stButton > button[kind="primary"] {background:#245a9b;border-color:#245a9b;}
+    </style>
+    """, unsafe_allow_html=True)
+
+    st.markdown('<div class="auth-shell">', unsafe_allow_html=True)
+    left, right = st.columns([1.02, 1.0], gap="large")
+    with left:
+        st.markdown("""
+        <div class="auth-panel">
+          <div style="font-size:.82rem;font-weight:700;letter-spacing:2px;color:#a9c8f2;margin-bottom:18px">UCE LEARNING PLATFORM</div>
+          <h1>Learn with purpose.<br>Prepare with confidence.</h1>
+          <p>One organised space for revision, practice examinations and academic progress from Senior One to Senior Four.</p>
+          <div style="margin-top:20px">
+            <div class="auth-point">Structured revision and topic practice</div>
+            <div class="auth-point">Practice examinations and feedback</div>
+            <div class="auth-point">Learning resources for your school</div>
+          </div>
+        </div>
+        """, unsafe_allow_html=True)
+    with right:
+        st.markdown('<div class="auth-card">', unsafe_allow_html=True)
+        st.markdown('<div class="auth-brand">ExamPrep AI</div><div class="auth-sub">Your UCE preparation workspace</div>', unsafe_allow_html=True)
+
+        if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+            st.error("Supabase is not configured yet. Add SUPABASE_URL and SUPABASE_ANON_KEY in Streamlit Secrets.")
+            st.code('SUPABASE_URL = "https://your-project.supabase.co"\nSUPABASE_ANON_KEY = "your-publishable-or-anon-key"', language="toml")
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.stop()
+
+        try:
+            if st.session_state.supabase_client is None:
+                st.session_state.supabase_client = get_supabase_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+        except Exception as exc:
+            st.error(f"Could not initialise Supabase: {exc}")
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown('</div>', unsafe_allow_html=True)
+            st.stop()
+
+        login_tab, register_tab = st.tabs(["Sign in", "Create account"])
+        with login_tab:
+            st.markdown("### Welcome back")
+            st.caption("Sign in to continue to your learning dashboard.")
+            with st.form("login_form", clear_on_submit=False):
+                email = st.text_input("Email address", placeholder="you@example.com")
+                password = st.text_input("Password", type="password", placeholder="Enter your password")
+                submitted = st.form_submit_button("Sign in", type="primary", use_container_width=True)
+            if submitted:
+                if not email.strip() or not password:
+                    st.warning("Enter your email address and password.")
+                else:
+                    try:
+                        result = st.session_state.supabase_client.auth.sign_in_with_password({"email": email.strip(), "password": password})
+                        user = result.user
+                        if not user:
+                            st.error("Sign-in was not completed. Check your details and try again.")
+                        else:
+                            st.session_state.auth_user = user
+                            profile = load_profile(user.id)
+                            st.session_state.full_name = profile.get("full_name") or user.email or "Student"
+                            st.session_state.school_name = profile.get("school_name") or "My School"
+                            st.session_state.class_level = profile.get("class_level") or "S4"
+                            st.session_state.role = profile.get("role") or "Student"
+                            st.session_state.profile_loaded = True
+                            st.session_state.page = "Home"
+                            st.rerun()
+                    except Exception as exc:
+                        st.error(f"Sign-in failed: {exc}")
+
+        with register_tab:
+            st.markdown("### Create your student account")
+            st.caption("New registrations are created with the Student role. School staff roles are assigned by a school administrator.")
+            with st.form("register_form", clear_on_submit=False):
+                reg_name = st.text_input("Full name", placeholder="Your full name")
+                reg_email = st.text_input("Email address", placeholder="you@example.com")
+                reg_school = st.text_input("School name", placeholder="Name of your school")
+                reg_class = st.selectbox("Class", LEVELS, index=3)
+                reg_password = st.text_input("Create password", type="password", help="Use at least 8 characters.")
+                reg_confirm = st.text_input("Confirm password", type="password")
+                registered = st.form_submit_button("Create account", type="primary", use_container_width=True)
+            if registered:
+                if not all([reg_name.strip(), reg_email.strip(), reg_school.strip(), reg_password, reg_confirm]):
+                    st.warning("Complete all the fields to create your account.")
+                elif len(reg_password) < 8:
+                    st.warning("Your password must contain at least 8 characters.")
+                elif reg_password != reg_confirm:
+                    st.warning("The passwords do not match.")
+                else:
+                    try:
+                        result = st.session_state.supabase_client.auth.sign_up({
+                            "email": reg_email.strip(),
+                            "password": reg_password,
+                            "options": {"data": {
+                                "full_name": reg_name.strip(),
+                                "school_name": reg_school.strip(),
+                                "class_level": reg_class
+                            }}
+                        })
+                        if result.session and result.user:
+                            st.session_state.auth_user = result.user
+                            profile = load_profile(result.user.id)
+                            st.session_state.full_name = profile.get("full_name") or reg_name.strip()
+                            st.session_state.school_name = profile.get("school_name") or reg_school.strip()
+                            st.session_state.class_level = profile.get("class_level") or reg_class
+                            st.session_state.role = "Student"
+                            st.session_state.profile_loaded = True
+                            st.success("Your account has been created.")
+                            st.rerun()
+                        else:
+                            st.success("Account created. Check your email for the confirmation link, then return here to sign in.")
+                    except Exception as exc:
+                        st.error(f"Account creation failed: {exc}")
+        st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
 GEMINI_API_KEY = get_secret("GEMINI_API_KEY")
 GEMINI_MODEL = get_secret("GEMINI_MODEL", "gemini-2.5-flash")
+
+# Require a valid Supabase login before showing the application workspace.
+if st.session_state.auth_user is None:
+    render_auth_page()
+    st.stop()
 
 @st.cache_resource(show_spinner=False)
 def get_gemini_client(api_key: str):
@@ -335,26 +490,21 @@ with st.sidebar:
     )
     st.session_state.page = selected_page
     st.markdown("---")
-    st.markdown("**PROFILE**")
-    st.session_state.full_name = st.text_input(
-        "Display name", value=st.session_state.full_name
-    )
-    st.session_state.role = st.selectbox(
-        "Preview role",
-        ["Student", "Teacher", "School Administrator"],
-        index=["Student", "Teacher", "School Administrator"].index(
-            st.session_state.role
-        )
-    )
-    st.session_state.school_name = st.text_input(
-        "School", value=st.session_state.school_name
-    )
-    st.session_state.class_level = st.selectbox(
-        "Class level", LEVELS,
-        index=LEVELS.index(st.session_state.class_level)
-    )
+    st.markdown("**SIGNED IN AS**")
+    st.write(st.session_state.full_name)
+    st.caption(f"{st.session_state.role} · {st.session_state.class_level}")
+    st.caption(st.session_state.school_name)
+    if st.button("Sign out", use_container_width=True):
+        try:
+            st.session_state.supabase_client.auth.sign_out()
+        except Exception:
+            pass
+        st.session_state.auth_user = None
+        st.session_state.profile_loaded = False
+        st.session_state.supabase_client = None
+        st.rerun()
     st.markdown("---")
-    st.caption("Prototype mode · Session data is temporary")
+    st.caption("Signed in securely with Supabase")
     if GEMINI_API_KEY:
         st.success("Gemini connected")
     else:
@@ -842,11 +992,6 @@ elif st.session_state.page == "Teacher Workspace":
 
 elif st.session_state.page == "School Administration":
     page_header("School Administration", "Overview of this prototype's school workspace.")
-    st.warning(
-        "This initial Streamlit build uses a role-preview selector, not production "
-        "authentication. Do not use it to manage real student records until Supabase "
-        "authentication, verified role assignments and row-level security are connected."
-    )
     c1, c2, c3 = st.columns(3)
     with c1: metric_card("Academic resources", len(st.session_state.documents))
     with c2: metric_card("Practice exams", len(st.session_state.results))
@@ -864,6 +1009,6 @@ elif st.session_state.page == "School Administration":
 
 st.markdown("---")
 st.caption(
-    "ExamPrep AI · UCE S1–S4 · Prototype build. "
-    "Uploaded files, chat history and results are session-only until persistent storage is connected."
+    "ExamPrep AI · UCE S1–S4 · Supabase authentication enabled. "
+    "Learning activity and uploaded resources are still session-only in this build."
 )
