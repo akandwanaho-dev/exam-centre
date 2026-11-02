@@ -867,4 +867,3 @@ st.caption(
     "ExamPrep AI · UCE S1–S4 · Prototype build. "
     "Uploaded files, chat history and results are session-only until persistent storage is connected."
 )
-
